@@ -1,0 +1,12 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 4h;
+let Grain = 1m;
+Perf
+| where TimeGenerated > ago(Lookback)
+| where Computer =~ Device or Computer startswith strcat(Device, ".")
+| where ObjectName == "PhysicalDisk" and InstanceName != "_Total"
+| where CounterName in ("Avg. Disk sec/Read", "Avg. Disk sec/Write")
+| extend Operation = iff(CounterName == "Avg. Disk sec/Read", "Read", "Write")
+| extend Series = strcat(InstanceName, " - ", Operation)
+| summarize MeanLatencyMs = avg(CounterValue) * 1000.0, PeakSampleLatencyMs = max(CounterValue) * 1000.0 by bin(TimeGenerated, Grain), Series
+| render timechart with (title="Disk latency: mean and peak counter sample", ytitle="Milliseconds", ymin=0)

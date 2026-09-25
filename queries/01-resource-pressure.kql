@@ -1,0 +1,14 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 4h;
+let Grain = 1m;
+let TotalPhysicalBytes = 17179869184.0; // Example 16 GiB; replace with the target device's TotalPhysicalMemory.
+Perf
+| where TimeGenerated > ago(Lookback)
+| where Computer =~ Device or Computer startswith strcat(Device, ".")
+| where (ObjectName == "Processor" and InstanceName == "_Total" and CounterName == "% Processor Time")
+    or (ObjectName == "Memory" and CounterName == "Available MBytes")
+| extend Metric = iff(ObjectName == "Processor", "CPU", "Physical RAM used")
+| extend Percent = iff(ObjectName == "Processor", CounterValue, 100.0 * (1.0 - CounterValue * 1048576.0 / TotalPhysicalBytes))
+| summarize AveragePercent = avg(Percent), PeakPercent = max(Percent) by bin(TimeGenerated, Grain), Metric
+| project TimeGenerated, Metric, AveragePercent, PeakPercent
+| render timechart with (title="CPU and physical memory pressure", ytitle="Percent", ymin=0, ymax=100)

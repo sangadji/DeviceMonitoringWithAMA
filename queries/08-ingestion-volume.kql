@@ -1,0 +1,10 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 24h;
+let Grain = 15m;
+union withsource=TableName Heartbeat, Perf
+| where ingestion_time() > ago(Lookback)
+| where Computer =~ Device or Computer startswith strcat(Device, ".")
+| extend Category = iff(TableName == "Perf", strcat("Perf / ", ObjectName), "Heartbeat")
+| summarize BillableMiB = sumif(_BilledSize, _IsBillable =~ "true") / 1048576.0 by TimeGenerated = bin(ingestion_time(), Grain), Category
+| project TimeGenerated, Category, BillableMiB
+| render columnchart with (kind=stacked, title="Billable ingestion by counter category", ytitle="MiB")

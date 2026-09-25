@@ -1,0 +1,18 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 4h;
+let Grain = 1m;
+let ExpectedSamplingSeconds = 10.0; // Match the DCR interval for the queried time window.
+let WindowEnd = bin(now(), Grain);
+let WindowStart = WindowEnd - Lookback;
+let Observed = Perf
+    | where TimeGenerated >= WindowStart and TimeGenerated < WindowEnd
+    | where Computer =~ Device or Computer startswith strcat(Device, ".")
+    | where ObjectName == "Processor" and CounterName == "% Processor Time" and InstanceName == "_Total"
+    | summarize by Computer, TimeGenerated
+    | summarize ObservedSamples = count() by BinTime = bin(TimeGenerated, Grain);
+range BinTime from WindowStart to (WindowEnd - Grain) step Grain
+| join kind=leftouter Observed on BinTime
+| extend ObservedSamples = coalesce(ObservedSamples, tolong(0))
+| extend ExpectedSamples = Grain / 1s / ExpectedSamplingSeconds
+| project TimeGenerated = BinTime, CoveragePercent = 100.0 * ObservedSamples / ExpectedSamples
+| render timechart with (title="CPU collection coverage per completed minute", ytitle="Observed / expected samples (%)", ymin=0)

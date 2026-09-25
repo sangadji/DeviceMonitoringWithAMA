@@ -1,0 +1,12 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 4h;
+let Grain = 1m;
+Perf
+| where TimeGenerated > ago(Lookback)
+| where Computer =~ Device or Computer startswith strcat(Device, ".")
+| where ObjectName == "PhysicalDisk" and InstanceName != "_Total"
+| where CounterName in ("Disk Read Bytes/sec", "Disk Write Bytes/sec")
+| extend Operation = iff(CounterName == "Disk Read Bytes/sec", "Read", "Write")
+| extend Series = strcat(InstanceName, " - ", Operation)
+| summarize MiBPerSecond = avg(CounterValue) / 1048576.0 by bin(TimeGenerated, Grain), Series
+| render timechart with (title="Physical disk read and write throughput", ytitle="MiB/sec", ymin=0)

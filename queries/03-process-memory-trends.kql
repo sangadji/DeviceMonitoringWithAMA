@@ -1,0 +1,17 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 4h;
+let Grain = 1m;
+let TopCount = 5;
+let Snapshots = materialize(
+    Perf
+    | where TimeGenerated > ago(Lookback)
+    | where Computer =~ Device or Computer startswith strcat(Device, ".")
+    | where ObjectName == "Process" and CounterName == "Working Set - Private"
+    | where InstanceName !in ("_Total", "Idle")
+    | summarize PrivateWorkingSetMiB = sum(CounterValue) / 1048576.0 by Computer, TimeGenerated, InstanceName
+);
+let TopNames = Snapshots | summarize PeakMiB = max(PrivateWorkingSetMiB) by InstanceName | top TopCount by PeakMiB desc | project InstanceName;
+Snapshots
+| where InstanceName in (TopNames)
+| summarize PrivateWorkingSetMiB = avg(PrivateWorkingSetMiB) by bin(TimeGenerated, Grain), InstanceName
+| render timechart with (title="Largest process-name groups: private working set", ytitle="MiB", ymin=0)

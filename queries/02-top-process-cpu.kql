@@ -1,0 +1,13 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 1h;
+let LogicalProcessors = 8.0; // Example CPU count; replace with the target device's NumberOfLogicalProcessors.
+let TopCount = 10;
+Perf
+| where TimeGenerated > ago(Lookback)
+| where Computer =~ Device or Computer startswith strcat(Device, ".")
+| where ObjectName == "Process" and CounterName == "% Processor Time"
+| where InstanceName !in ("_Total", "Idle")
+| summarize SnapshotCpu = sum(CounterValue) / LogicalProcessors by Computer, TimeGenerated, InstanceName
+| summarize AverageCpuPercent = avg(SnapshotCpu), PeakCpuPercent = max(SnapshotCpu) by InstanceName
+| top TopCount by AverageCpuPercent desc
+| render barchart with (title="Top process-name groups by CPU while observed", xtitle="Process name", ytitle="Percent of machine CPU")

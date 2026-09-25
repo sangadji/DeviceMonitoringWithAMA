@@ -1,0 +1,26 @@
+# Local credentials, authentication caches, and operator-specific settings.
+.azure/
+.aws/
+.config/
+.mg/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.publishsettings
+*.local.*
+secrets/
+
+# Device diagnostics and downloaded installers are not source artifacts.
+*.log
+*.etl
+*.dmp
+*.msi
+*.exe
+logs/
+artifacts/
+.copilot/
+.vscode/

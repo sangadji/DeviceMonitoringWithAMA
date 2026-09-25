@@ -1,0 +1,9 @@
+let Device = "CONTOSO-PC"; // Replace with the target Computer value from Perf or Heartbeat.
+let Lookback = 24h;
+let Grain = 5m;
+Perf
+| where TimeGenerated > ago(Lookback)
+| where Computer =~ Device or Computer startswith strcat(Device, ".")
+| where ObjectName == "LogicalDisk" and CounterName == "% Free Space" and InstanceName != "_Total"
+| summarize FreePercent = avg(CounterValue) by bin(TimeGenerated, Grain), InstanceName
+| render timechart with (title="Free capacity by volume", ytitle="Percent free", ymin=0, ymax=100)
