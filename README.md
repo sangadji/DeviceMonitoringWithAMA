@@ -8,6 +8,10 @@ This guide describes the workflow implemented in this repository. The
 [lab runbook](LAB-RUNBOOK.md) preserves sanitized lab deployment evidence and
 troubleshooting history. Public examples use fictional identities, not live targets.
 
+**Onboarding multiple PCs?** Follow the
+[security-group onboarding guide](#target-an-existing-security-group-two-or-more-devices)
+for the complete laptop-to-device workflow. Add **devices, not users**, to the group.
+
 ## Architecture And Scope
 
 ```mermaid
@@ -155,38 +159,207 @@ a complete simulation of later publishing steps.
 
 ### Target An Existing Security Group (Two Or More Devices)
 
-Use this option instead of the single-device publishing commands above.
+Use this option instead of the single-device publishing commands above. Example:
+onboard `LAPTOP-01` and `LAPTOP-02` with one group and one Intune assignment.
+These devices must already be Intune-enrolled; this workflow installs AMA,
+not Intune or the Entra join.
 
-1. In Microsoft Entra, create a **Security** group with **Assigned** membership.
-   Add the correct Intune-managed Windows **device objects** directly and copy
-   the group's **Object ID**. Empty groups, dynamic groups, mail-enabled groups,
-   users, nested groups, disabled devices, non-Windows devices, and devices
-   without a matching Intune Windows record are rejected at publication time.
-2. Set the real tenant ID in the installer and publisher, and the authorized
-   administrator UPN in the publisher. Leave the installer's default
-   `TargetingMode = 'SingleDevice'` unchanged. The single-device computer names
-   and device-ID examples are not used by group-targeted deployments.
-3. On the Windows administration workstation, authenticate to Graph using the
-   same consented scopes listed above. Install `Microsoft.Graph.Authentication`
-   first if it is missing:
+| Where | What you do |
+| --- | --- |
+| Your administration laptop | Configure files, prepare Azure, sign in, and publish the Intune script. |
+| Microsoft Entra admin center | Create the device security group and maintain membership. |
+| Each target PC | Check join health, sync Intune, and verify the agent service. Intune runs the installer as SYSTEM. |
+| Azure Portal | Check telemetry and run the visualization queries. |
 
-   ```powershell
-   Import-Module Microsoft.Graph.Authentication
-   Connect-MgGraph -TenantId '<your-tenant-id>' -Scopes @(
-       'DeviceManagementScripts.ReadWrite.All'
-       'Group.ReadWrite.All'
-       'Device.Read.All'
-       'DeviceManagementManagedDevices.Read.All'
-   ) -UseDeviceCode -ContextScope CurrentUser -NoWelcome
-   ```
+> The group limits **installer assignment**, not the tenant monitored-object DCR.
+> Review existing tenant AMA installations and DCR associations before proceeding.
+> Azure ingestion and retention can incur charges.
 
-4. From the repository root, preview and then publish:
+#### Step 1: Prepare Your Administration Laptop
 
-   ```powershell
-   $targetGroupId = '<your-device-security-group-object-id>'
-   .\scripts\Publish-IntuneAgent.ps1 -TargetSecurityGroupId $targetGroupId -WhatIf
-   .\scripts\Publish-IntuneAgent.ps1 -TargetSecurityGroupId $targetGroupId
-   ```
+Use **Windows PowerShell** on your administration laptop, not a shell on each
+target PC. Install the following only if they are missing:
+
+```powershell
+winget install --exact --id Microsoft.AzureCLI
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Repository PSGallery
+```
+
+After installing Azure CLI, close and reopen Windows PowerShell. Check the tools
+and enter the cloned repository folder (adjust the path if necessary):
+
+```powershell
+az version
+Get-Module Microsoft.Graph.Authentication -ListAvailable
+Set-Location C:\Source\DeviceMonitoringWithAMA
+```
+
+#### Step 2: Create The Group And Add Devices
+
+In **Microsoft Entra admin center > Identity > Groups > All groups**:
+
+1. Create a group with type **Security**, name such as `AMA-Pilot-Devices`,
+   and membership type **Assigned**.
+2. Open **Members > Add members** and add `LAPTOP-01` and `LAPTOP-02` as
+   **Device** objects. Do not add their user accounts.
+3. Copy the group's **Object ID**. This is the value for `-TargetSecurityGroupId`,
+   not a device ID or the group display name.
+
+If duplicate device names exist, match the Microsoft Entra device ID shown in
+Intune to the Device ID on the Entra device record before selecting it.
+The group must contain only direct, enabled, Intune-managed Windows devices.
+Empty groups, dynamic groups, mail-enabled groups, users, nested groups, and
+devices without a matching Intune Windows record are rejected at publication time.
+
+On **each target PC**, run `dsregcmd /status`. Confirm `AzureAdJoined : YES`,
+`DeviceAuthStatus : SUCCESS`, and the expected tenant ID. Resolve join or
+authentication issues before continuing.
+
+#### Step 3: Configure Your Environment Once
+
+On the administration laptop, replace the fictional values:
+
+| File | Required settings for group onboarding |
+| --- | --- |
+| [Installer](scripts/Install-AzureMonitorAgent.ps1) | Your tenant ID in the `$required` checks. |
+| [Publisher](scripts/Publish-IntuneAgent.ps1) | Your tenant ID and authorized administrator UPN in the Graph context check. |
+| [Collection controller](scripts/Set-MonitoringCollection.ps1) | Your tenant ID, subscription ID, administrator UPN, resource group, DCR name, and project association name where applicable. |
+| [Azure template](infra/azuredeploy.json) | Review resource names, region, retention, cap, and counters; use matching names in the collection controller. |
+| [Monitored-object template](infra/monitored-object.json) | Region matching the DCR. |
+
+Leave the installer's top-level default `TargetingMode = 'SingleDevice'`
+unchanged when using the automated publisher. It prepares the group-mode copy
+for Intune automatically. You do **not** need to list every computer name or
+device ID, change the single-device examples, or run the inventory script for
+this group workflow. Shell variables do not update values inside these files.
+
+#### Step 4: Prepare Shared Azure Resources
+
+On the administration laptop, follow [1. Prepare Azure](#1-prepare-azure) above.
+Sign in to the correct tenant/subscription, deploy the workspace and DCR, and
+have an authorized administrator inspect/reuse or create the tenant monitored
+object. Do not blindly overwrite an existing object or its associations.
+
+Do this **once for the group**, not once per PC. If compatible resources are
+already prepared, verify them rather than creating a separate workspace/DCR
+for each new member. Do not create the new project DCR association until
+installation is verified in step 7. Existing associations may already configure
+newly installed agents.
+
+#### Step 5: Sign In To Microsoft Graph
+
+Azure CLI sign-in and Graph sign-in are separate. On the administration laptop,
+run the following with an account matching the publisher's configured UPN and
+having the required consent and administrative permissions:
+
+```powershell
+$tenantId = '<your-tenant-id>'
+Import-Module Microsoft.Graph.Authentication
+Connect-MgGraph -TenantId $tenantId -Scopes @(
+    'DeviceManagementScripts.ReadWrite.All'
+    'Group.ReadWrite.All'
+    'Device.Read.All'
+    'DeviceManagementManagedDevices.Read.All'
+) -UseDeviceCode -ContextScope CurrentUser -NoWelcome
+```
+
+Follow the device-code sign-in instructions. These permissions allow the
+publisher to inspect devices and groups and publish the Intune platform script.
+
+#### Step 6: Preview, Then Publish To The Group
+
+From the repository root on the administration laptop, replace the placeholder
+with the group's Object ID from step 2:
+
+```powershell
+$targetGroupId = '<your-device-security-group-object-id>'
+.\scripts\Publish-IntuneAgent.ps1 -TargetSecurityGroupId $targetGroupId -WhatIf
+```
+
+Check for validation errors. `-WhatIf` does not write changes and may stop at
+the first object that would be created; it is not a complete deployment test.
+When the target is correct, publish:
+
+```powershell
+.\scripts\Publish-IntuneAgent.ps1 -TargetSecurityGroupId $targetGroupId
+```
+
+Run this **once for the group**. Intune executes the uploaded installer
+separately on each eligible device. Do not run the endpoint installer manually.
+The publisher creates and assigns a SYSTEM/x64 platform script; you do not need
+to upload the same script again in the Intune website.
+
+`AssignmentVerified = True` confirms the assignment, not installation.
+`InstallationVerified = False` is expected because the publisher does not wait
+for endpoint execution.
+
+#### Step 7: Sync And Check Each PC
+
+On **each target PC**, open **Settings > Accounts > Access work or school**,
+select the managed connection, then **Info > Sync**. Allow time for Intune
+processing; execution and reporting are not immediate.
+
+Check the script's **Device status** under **Intune admin center > Devices >
+Scripts and remediations > Platform scripts**. The group script is named
+`Contoso - Install AMA - Group <group-object-id>`.
+
+Then run on each PC:
+
+```powershell
+Get-Service AzureMonitorAgent
+```
+
+Expected status: **Running**. If missing or stopped, use the installer and IME
+logs described in [3. Verify Installation And Activate Collection](#3-verify-installation-and-activate-collection)
+before proceeding.
+
+#### Step 8: Enable Performance Collection
+
+After checking installation and reviewing tenant scope, run on the
+administration laptop:
+
+```powershell
+.\scripts\Set-MonitoringCollection.ps1 -Action SetInterval -SamplingSeconds 10
+.\scripts\Set-MonitoringCollection.ps1 -Action Start -AcknowledgeTenantScope
+.\scripts\Set-MonitoringCollection.ps1 -Action Status
+```
+
+These configure the shared DCR and its tenant association, not an individual PC.
+If the intended DCR is already active with the right settings, check `Status`
+instead of changing it for each new member.
+
+#### Step 9: Confirm Data From Both PCs
+
+In **Azure Portal > your Log Analytics workspace > Logs**, choose **KQL mode**
+and run:
+
+```kusto
+union withsource=TableName Heartbeat, Perf
+| where TimeGenerated > ago(24h)
+| summarize Records=count(), Latest=max(TimeGenerated) by TableName, Computer
+| order by Computer asc, TableName asc
+```
+
+Look for recent **Heartbeat** and **Perf** records for **each PC**. Initial
+configuration and ingestion take time; an assignment or a running service alone
+does not prove data delivery.
+
+For charts, open a [query](queries), set `Device` to the observed `Computer`
+value, adjust any hardware-specific parameters, and run it separately.
+
+#### Add Another Device Later
+
+1. Confirm the new Windows PC is already Intune-enrolled and Entra joined or
+   hybrid joined, with healthy authentication.
+2. Add its correct **Device** object directly to the same security group.
+3. Allow membership and Intune assignment propagation, sync the PC, and repeat
+   steps 7 and 9 for that device.
+
+You normally do not need to republish an unchanged installer or recreate Azure
+resources. Only manage membership through authorized administrators. Removing
+a member does **not** uninstall AMA or stop its collection.
+
+#### How Group Publishing Works
 
 The publisher validates current direct group members, including paginated
 results, and does not create the group or add/remove members. It creates a
