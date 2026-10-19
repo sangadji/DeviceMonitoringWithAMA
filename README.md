@@ -55,19 +55,21 @@ require additional evaluation. This is not the VM-extension or server/Arc workfl
 
 ## Adapt The Lab Before Running
 
-The scripts retain single-device guards but now contain fictional example values
+The scripts default to single-device guards and contain fictional example values
 such as `admin@contoso.example`, `CONTOSO-PC`, and repeated-digit GUIDs. Inline
 comments identify the values to replace. They are not a tenant-neutral deployment
 framework and will reject real accounts until configured. Update values across
 scripts and test fixtures consistently; do not remove the safety checks.
+The opt-in security-group workflow below replaces per-device targeting with an
+Intune group assignment while retaining tenant and endpoint health checks.
 
 | File | Values or behavior to review |
 | --- | --- |
 | [infra/azuredeploy.json](infra/azuredeploy.json) | Workspace and DCR names, region, retention, daily cap, counter selection. |
 | [infra/monitored-object.json](infra/monitored-object.json) | Region, which must match the DCR. |
 | [scripts/Get-EnrollmentInventory.ps1](scripts/Get-EnrollmentInventory.ps1) | Expected account, tenant, device names and identities. |
-| [scripts/Install-AzureMonitorAgent.ps1](scripts/Install-AzureMonitorAgent.ps1) | Expected computer name, tenant ID, and local Entra device ID. |
-| [scripts/Publish-IntuneAgent.ps1](scripts/Publish-IntuneAgent.ps1) | Account, tenant, Intune managed-device ID, mapped directory object/device IDs, group and script names, ownership marker. |
+| [scripts/Install-AzureMonitorAgent.ps1](scripts/Install-AzureMonitorAgent.ps1) | Tenant ID in all modes; expected computer name and local Entra device ID in single-device mode only. |
+| [scripts/Publish-IntuneAgent.ps1](scripts/Publish-IntuneAgent.ps1) | Account and tenant in all modes; device IDs, group/script names and ownership marker in single-device mode only. Use `-TargetSecurityGroupId` for an existing device security group. |
 | [scripts/Set-MonitoringCollection.ps1](scripts/Set-MonitoringCollection.ps1) | Account, tenant, subscription, resource group, DCR and association identifiers. |
 | [tests/Test-DeploymentScripts.ps1](tests/Test-DeploymentScripts.ps1) | Fixtures and assertions corresponding to the adapted guards. |
 | [queries](queries) | Target device and hardware-specific query parameters. |
@@ -151,24 +153,89 @@ unexpected assignments. It does not implement a general script update pipeline.
 `-WhatIf` can return early when a dependent object does not exist, so it is not
 a complete simulation of later publishing steps.
 
+### Target An Existing Security Group (Two Or More Devices)
+
+Use this option instead of the single-device publishing commands above.
+
+1. In Microsoft Entra, create a **Security** group with **Assigned** membership.
+   Add the correct Intune-managed Windows **device objects** directly and copy
+   the group's **Object ID**. Empty groups, dynamic groups, mail-enabled groups,
+   users, nested groups, disabled devices, non-Windows devices, and devices
+   without a matching Intune Windows record are rejected at publication time.
+2. Set the real tenant ID in the installer and publisher, and the authorized
+   administrator UPN in the publisher. Leave the installer's default
+   `TargetingMode = 'SingleDevice'` unchanged. The single-device computer names
+   and device-ID examples are not used by group-targeted deployments.
+3. On the Windows administration workstation, authenticate to Graph using the
+   same consented scopes listed above. Install `Microsoft.Graph.Authentication`
+   first if it is missing:
+
+   ```powershell
+   Import-Module Microsoft.Graph.Authentication
+   Connect-MgGraph -TenantId '<your-tenant-id>' -Scopes @(
+       'DeviceManagementScripts.ReadWrite.All'
+       'Group.ReadWrite.All'
+       'Device.Read.All'
+       'DeviceManagementManagedDevices.Read.All'
+   ) -UseDeviceCode -ContextScope CurrentUser -NoWelcome
+   ```
+
+4. From the repository root, preview and then publish:
+
+   ```powershell
+   $targetGroupId = '<your-device-security-group-object-id>'
+   .\scripts\Publish-IntuneAgent.ps1 -TargetSecurityGroupId $targetGroupId -WhatIf
+   .\scripts\Publish-IntuneAgent.ps1 -TargetSecurityGroupId $targetGroupId
+   ```
+
+The publisher validates current direct group members, including paginated
+results, and does not create the group or add/remove members. It creates a
+separate platform script identified by the group ID and assigns it only to that
+group. It changes only the **uploaded** installer's default to `SecurityGroup`;
+the local installer remains single-device by default. The reported
+`InstallerSHA256` hashes the uploaded bytes, which differ from the local file
+in group mode. Existing script content/settings or assignment conflicts are
+rejected rather than silently overwritten.
+
+In group mode, the endpoint still requires SYSTEM, x64 PowerShell, a healthy
+Entra join, the expected tenant, and a valid device ID. It does not check a
+hardcoded computer name or device ID, or call Graph to recheck group membership.
+**Intune assignment is the installation-targeting boundary.** Restrict who can
+edit group membership and script assignments; later eligible members can receive
+the installer without republishing. Publication-time validation is not continuous
+enrollment monitoring. Removing a member does not uninstall AMA or stop collection.
+
+Continue with installation and telemetry verification for **each** device below.
+No extra workspace or DCR is needed per device when they share the same settings.
+The monitored-object DCR association, including Start/Stop and sampling changes,
+remains **tenant-wide for AMA Windows client installations**, not group-scoped.
+The collection-control script is unchanged.
+
 ### Intune Admin Center
 
 Alternatively, open **Devices > Scripts and remediations > Platform scripts >
 Add > Windows 10 and later** and upload the adapted
 [installer](scripts/Install-AzureMonitorAgent.ps1).
+For manual multi-device group targeting, change only the top-level parameter
+default to `TargetingMode = 'SecurityGroup'` in the copy you upload, configure
+the tenant ID, and assign that copy to your verified device security group.
+The function-level default need not change. Do not use this modified local
+copy with the automated publisher, which expects the original single-device
+default. The same group-targeting boundaries and limitations above apply.
 
 | Setting | Value |
 | --- | --- |
 | Run this script using the logged on credentials | No, to run as SYSTEM. |
 | Run script in 64-bit PowerShell host | Yes. |
 | Enforce script signature check | No for the unsigned lab script. |
-| Assignment | A dedicated device security group containing the verified pilot device. |
+| Assignment | A dedicated device security group containing the verified pilot device, or verified Windows devices with a group-targeted installer. |
 
 Production signing requires a trusted signing process and corresponding
 publisher changes. Disabling platform-script signature enforcement does not
 disable the installer's Microsoft Authenticode checks on downloaded binaries.
 
-The installer checks device identity, installs the VC++ runtime if needed,
+The installer checks tenant/join health and, by default, the individual device
+identity, installs the VC++ runtime if needed,
 downloads the Microsoft-signed AMA MSI, and installs silently without forcing
 a restart. An existing AMA service skips installation; this is not an automatic
 upgrade solution.

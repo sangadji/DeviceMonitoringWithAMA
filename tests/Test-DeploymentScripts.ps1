@@ -119,3 +119,5 @@ if (-not $status.ConfigurationAssociated -or $status.OtherAssociationCount -ne 1
 Invoke-MonitoringCollection -Action Start -AcknowledgeTenantScope -Confirm:$false | Out-Null
 if ($script:testWrites -ne 2) { throw 'Start is not idempotent.' }
 'PASS: Start scope acknowledgement, one-second guard, collision refusal, WhatIf, and idempotency. Azure calls mocked.'
+
+& (Join-Path $PSScriptRoot 'Test-IntuneGroupTargeting.ps1')

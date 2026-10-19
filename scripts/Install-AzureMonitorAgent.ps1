@@ -1,20 +1,37 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidateSet('SingleDevice', 'SecurityGroup')]
+    [string]$TargetingMode = 'SingleDevice'
+)
 
 $ErrorActionPreference = 'Stop'
 
 function Assert-TargetDevice {
-    param([string]$JoinStatus, [string]$ComputerName, [string]$IdentitySid, [bool]$Is64Bit)
+    param(
+        [string]$JoinStatus, [string]$ComputerName, [string]$IdentitySid, [bool]$Is64Bit,
+        [ValidateSet('SingleDevice', 'SecurityGroup')]
+        [string]$TargetingMode = 'SingleDevice'
+    )
 
     if ($IdentitySid -ne 'S-1-5-18' -or -not $Is64Bit) {
         throw 'Intune must run this script as SYSTEM in 64-bit PowerShell.'
     }
-    if ($ComputerName -ine 'CONTOSO-PC') { throw 'Unexpected computer name.' } # Replace with the target computer name; retain the guard.
+    if ($TargetingMode -eq 'SingleDevice' -and $ComputerName -ine 'CONTOSO-PC') { throw 'Unexpected computer name.' } # Replace for single-device deployments.
     $required = @{
         AzureAdJoined = 'YES'
         DeviceAuthStatus = 'SUCCESS'
         TenantId = '11111111-1111-1111-1111-111111111111' # Replace with your Entra tenant ID.
-        DeviceId = '33333333-3333-3333-3333-333333333333' # Replace with the device ID from dsregcmd /status.
+    }
+    if ($TargetingMode -eq 'SingleDevice') {
+        $required.DeviceId = '33333333-3333-3333-3333-333333333333' # Replace with the device ID from dsregcmd /status.
+    }
+    else {
+        # Intune enforces group assignment; endpoints do not need Graph credentials.
+        $deviceMatch = [regex]::Match($JoinStatus, '(?im)^\s*DeviceId\s*:\s*([0-9a-f-]+)\s*$')
+        $deviceId = [guid]::Empty
+        if (-not $deviceMatch.Success -or -not [guid]::TryParse($deviceMatch.Groups[1].Value, [ref]$deviceId) -or $deviceId -eq [guid]::Empty) {
+            throw 'Entra prerequisite failed: valid DeviceId required.'
+        }
     }
     foreach ($key in $required.Keys) {
         $pattern = '(?im)^\s*' + [regex]::Escape($key) + '\s*:\s*' + [regex]::Escape($required[$key]) + '\s*$'
@@ -55,7 +72,7 @@ $transcriptStarted = $false
 try {
     $joinStatus = (& "$env:windir\System32\dsregcmd.exe" /status | Out-String)
     if ($LASTEXITCODE -ne 0) { throw 'Unable to read Entra join status.' }
-    Assert-TargetDevice -JoinStatus $joinStatus -ComputerName $env:COMPUTERNAME -IdentitySid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -Is64Bit ([Environment]::Is64BitProcess)
+    Assert-TargetDevice -JoinStatus $joinStatus -ComputerName $env:COMPUTERNAME -IdentitySid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -Is64Bit ([Environment]::Is64BitProcess) -TargetingMode $TargetingMode
 
     $logRoot = Join-Path $env:ProgramData 'ContosoDeviceMonitoring'
     $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
